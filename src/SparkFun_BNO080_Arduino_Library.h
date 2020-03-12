@@ -195,6 +195,7 @@ public:
 	void calibrateAll();
 	void endCalibration();
 	void saveCalibration();
+	bool calibrationSaved();
 	void requestCalibrationStatus(); //Sends command to get status
 	boolean calibrationComplete();   //Checks ME Cal response for byte 5, R0 - Status
 
@@ -214,6 +215,7 @@ public:
 	int16_t getRawMagX();
 	int16_t getRawMagY();
 	int16_t getRawMagZ();
+	uint8_t getRawMagStatus();
 
 	void setFeatureCommand(uint8_t reportID, uint16_t timeBetweenReports);
 	void setFeatureCommand(uint8_t reportID, uint16_t timeBetweenReports, uint32_t specificConfig);
@@ -229,6 +231,9 @@ public:
 	uint32_t readFRSword(uint16_t recordID, uint8_t wordNumber);
 	void frsReadRequest(uint16_t recordID, uint16_t readOffset, uint16_t blockSize);
 	bool readFRSdata(uint16_t recordID, uint8_t startLocation, uint8_t wordsToRead);
+
+	void tareRotationVectorNow();
+  void persistTare();
 
 	//Global Variables
 	uint8_t shtpHeader[4]; //Each packet has a header of 4 bytes
@@ -264,9 +269,11 @@ private:
 	uint8_t activityClassifier;
 	uint8_t *_activityConfidences;						  //Array that store the confidences of the 9 possible activities
 	uint8_t calibrationStatus;							  //Byte R0 of ME Calibration Response
+	bool calibrationSaveConfirmed;   // Have we received confirmation that calibration was saved?
 	uint16_t memsRawAccelX, memsRawAccelY, memsRawAccelZ; //Raw readings from MEMS sensor
 	uint16_t memsRawGyroX, memsRawGyroY, memsRawGyroZ;	//Raw readings from MEMS sensor
 	uint16_t memsRawMagX, memsRawMagY, memsRawMagZ;		  //Raw readings from MEMS sensor
+  uint8_t memsRawMagStatus;
 
 	//These Q values are defined in the datasheet but can also be obtained by querying the meta data records
 	//See the read metadata example for more info

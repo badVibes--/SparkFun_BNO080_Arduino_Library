@@ -192,9 +192,11 @@ void BNO080::parseCommandReport(void)
 		//The BNO080 responds with this report to command requests. It's up to use to remember which command we issued.
 		uint8_t command = shtpData[2]; //This is the Command byte of the response
 
-		if (command == COMMAND_ME_CALIBRATE)
-		{
+		if (command == COMMAND_ME_CALIBRATE) {
 			calibrationStatus = shtpData[5 + 0]; //R0 - Status (0 = success, non-zero = fail)
+		}
+		else if (COMMAND_DCD == command) {
+			calibrationSaveConfirmed = true;
 		}
 	}
 	else
@@ -272,6 +274,8 @@ void BNO080::parseInputReport(void)
 	}
 	else if (shtpData[5] == SENSOR_REPORTID_MAGNETIC_FIELD)
 	{
+    //Serial.print("mag ");
+    //Serial.println(status);
 		magAccuracy = status;
 		rawMagX = data1;
 		rawMagY = data2;
@@ -316,6 +320,9 @@ void BNO080::parseInputReport(void)
 	}
 	else if (shtpData[5] == SENSOR_REPORTID_RAW_MAGNETOMETER)
 	{
+	  //Serial.print("rmag ");
+	  //Serial.println(status);
+    memsRawMagStatus = status;
 		memsRawMagX = data1;
 		memsRawMagY = data2;
 		memsRawMagZ = data3;
@@ -560,6 +567,11 @@ int16_t BNO080::getRawMagZ()
 	return (memsRawMagZ);
 }
 
+uint8_t BNO080::getRawMagStatus()
+{
+  return (memsRawMagStatus);
+}
+
 //Given a record ID, read the Q1 value from the metaData record in the FRS (ya, it's complicated)
 //Q1 is used for all sensor data calculations
 int16_t BNO080::getQ1(uint16_t recordID)
@@ -725,6 +737,34 @@ void BNO080::softReset(void)
 	while (receivePacket() == true)
 		;
 }
+
+
+void BNO080::tareRotationVectorNow()
+{
+	// clear the shtpData array
+	for (uint8_t x = 3; x < 12; x++)
+		shtpData[x] = 0;
+
+	shtpData[3] = 0x00; //P0 - subcommand: Tare now
+	shtpData[4] = 0x07; //P1 - all axes
+	shtpData[5] = 0x00; //P2 - rotation vector
+
+	//Using this shtpData packet, send a command
+	sendCommand(COMMAND_TARE); //Save DCD command
+}
+
+void BNO080::persistTare()
+{
+	// clear the shtpData array
+	for (uint8_t x = 3; x < 12; x++)
+		shtpData[x] = 0;
+
+	shtpData[3] = 0x01; // P0 - subcommand: Persist tare
+
+	//Using this shtpData packet, send a command
+	sendCommand(COMMAND_TARE); //Save DCD command
+}
+
 
 //Get the reason for the last reset
 //1 = POR, 2 = Internal reset, 3 = Watchdog, 4 = External reset, 5 = Other
@@ -1017,8 +1057,14 @@ void BNO080::saveCalibration()
 	for (uint8_t x = 3; x < 12; x++) //Clear this section of the shtpData array
 		shtpData[x] = 0;
 
+	calibrationSaveConfirmed = false;
 	//Using this shtpData packet, send a command
 	sendCommand(COMMAND_DCD); //Save DCD command
+}
+
+bool BNO080::calibrationSaved()
+{
+	return calibrationSaveConfirmed;
 }
 
 //Wait a certain time for incoming I2C bytes before giving up
