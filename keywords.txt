@@ -21,6 +21,7 @@ softReset	KEYWORD2
 resetReason	KEYWORD2
 
 qToFloat	KEYWORD2
+floatToQ    KEYWORD2
 
 waitForI2C	KEYWORD2
 waitForSPI	KEYWORD2
@@ -108,6 +109,9 @@ getRange	KEYWORD2
 readFRSword	KEYWORD2
 frsReadRequest	KEYWORD2
 readFRSdata	KEYWORD2
+frsWriteRequest KEYWORD2
+frsWriteDataRequest KEYWORD2
+writeFRSdata    KEYWORD2
 
 getRawAccelX	KEYWORD2
 getRawAccelY	KEYWORD2

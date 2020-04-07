@@ -72,6 +72,9 @@ const byte CHANNEL_GYRO = 5;
 #define SHTP_REPORT_COMMAND_REQUEST 0xF2
 #define SHTP_REPORT_FRS_READ_RESPONSE 0xF3
 #define SHTP_REPORT_FRS_READ_REQUEST 0xF4
+#define SHTP_REPORT_FRS_WRITE_REQUEST 0xF7
+#define SHTP_REPORT_FRS_WRITE_DATA_REQUEST 0xF6
+#define SHTP_REPORT_FRS_WRITE_RESPONSE 0xF5
 #define SHTP_REPORT_PRODUCT_ID_RESPONSE 0xF8
 #define SHTP_REPORT_PRODUCT_ID_REQUEST 0xF9
 #define SHTP_REPORT_BASE_TIMESTAMP 0xFB
@@ -103,6 +106,29 @@ const byte CHANNEL_GYRO = 5;
 #define FRS_RECORDID_MAGNETIC_FIELD_CALIBRATED 0xE309
 #define FRS_RECORDID_ROTATION_VECTOR 0xE30B
 
+#define FRS_WRITE_STATUS_WORDS_RECEIVED      0x00 //0 – word(s) received
+#define FRS_WRITE_STATUS_UNRECOGNISED_TYPE   0x01 //1 – unrecognized FRS type
+#define FRS_WRITE_STATUS_BUSY                0x02 //2 – busy
+#define FRS_WRITE_STATUS_COMPLETED           0x03 //3 – write completed
+#define FRS_WRITE_STATUS_READY               0x04 //4 – write mode entered or ready
+#define FRS_WRITE_STATUS_FAILED              0x05 //5 – write failed
+#define FRS_WRITE_STATUS_DATA_RECEIVED_WHILE_NOT_IN_WRITE_MODE 0x06  //6 – data received while not in write mode
+#define FRS_WRITE_STATUS_INVALID_LENGTH      0x07 //7 – invalid length
+#define FRS_WRITE_STATUS_RECORD_VALID        0x08 //8 – record valid (the complete record passed internal validation checks)
+#define FRS_WRITE_STATUS_RECORD_INVALID      0x09 //9 – record invalid (the complete record failed internal validation checks)
+#define FRS_WRITE_STATUS_DEVICE_ERROR        0x10 //10 – device error (DFU flash memory device unavailable)
+#define FRS_WRITE_STATUS_RECORD_IS_READ_ONLY 0x11 //11 – record is read only
+
+#define FRS_READ_STATUS_OK                    0x00 //0 – noerror
+#define FRS_READ_STATUS_UNRECOGNISED_TYPE     0x01 //1 – unrecognized FRS type
+#define FRS_READ_STATUS_BUSY                  0x02 //2 – busy
+#define FRS_READ_STATUS_COMLETED              0x03 //3 – read record completed
+#define FRS_READ_STATUS_OFFSET_OUT_OF_RANGE   0x04 //4 – offset out of range
+#define FRS_READ_STATUS_RECORD_EMPTY          0x05 //5 – record empty
+#define FRS_READ_STATUS_READ_BLOCK_COMPLETED  0x06 //6 – read block completed (if block size requested)
+#define FRS_READ_STATUS_READ_RECORD_COMPLETED 0x07 //7 – read block completed and read record completed (if block size requested)
+#define FRS_READ_STATUS_DEVICE_ERROR          0x08 //8 – device error (DFU flash memory device unavailable)
+
 //Command IDs from section 6.4, page 42
 //These are used to calibrate, initialize, set orientation, tare etc the sensor
 #define COMMAND_ERRORS 1
@@ -122,6 +148,10 @@ const byte CHANNEL_GYRO = 5;
 #define CALIBRATE_ACCEL_GYRO_MAG 4
 #define CALIBRATE_STOP 5
 
+#define CONFIGURE_GAME_ROTATION_VECTOR 0x0207
+#define CONFIGURE_9AXIS_ROTATION_VECTOR 0x0204
+
+
 #define MAX_PACKET_SIZE 128 //Packets can be up to 32k but we don't have that much RAM.
 #define MAX_METADATA_SIZE 9 //This is in words. There can be many but we mostly only care about the first 9 (Qs, range, etc)
 
@@ -137,6 +167,7 @@ public:
 	uint8_t resetReason(); //Query the IMU for the reason it last reset
 
 	float qToFloat(int16_t fixedPointValue, uint8_t qPoint); //Given a Q value, converts fixed point floating to regular floating point number
+    uint32_t floatToQ(float floatValue, uint8_t qPoint);// oposite of above
 
 	boolean waitForI2C(); //Delay based polling for I2C traffic
 	boolean waitForSPI(); //Delay based polling for INT pin to go low
@@ -158,6 +189,8 @@ public:
 	void enableRawGyro(uint16_t timeBetweenReports);
 	void enableRawMagnetometer(uint16_t timeBetweenReports);
 	void enableGyroIntegratedRotationVector(uint16_t timeBetweenReports);
+    bool configureGyroIntegratedRotationVector(uint16_t source, uint32_t syncInterval, float maxError, uint8_t  prediction);
+    
 
 	bool dataAvailable(void);
 	void parseInputReport(void);   //Parse sensor readings out of report
@@ -236,10 +269,13 @@ public:
 	float getRange(uint16_t recordID);
 	uint32_t readFRSword(uint16_t recordID, uint8_t wordNumber);
 	void frsReadRequest(uint16_t recordID, uint16_t readOffset, uint16_t blockSize);
+    void frsWriteRequest(uint16_t recordID, uint16_t length);
+    void frsWriteDataRequest(uint16_t writeOffset, uint32_t *data, uint16_t size);
 	bool readFRSdata(uint16_t recordID, uint8_t startLocation, uint8_t wordsToRead);
+    bool writeFRSdata(uint16_t recordID, uint32_t *data, uint16_t wordsToSend);
 
 	void tareRotationVectorNow();
-  void persistTare();
+    void persistTare();
 
 	//Global Variables
 	uint8_t shtpHeader[4]; //Each packet has a header of 4 bytes

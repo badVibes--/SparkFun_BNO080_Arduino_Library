@@ -59,6 +59,8 @@ boolean BNO080::begin(uint8_t deviceAddress, TwoWire &wirePort, uint8_t intPin)
 			return (true);
 		}
 	}
+    
+
 
 	return (false); //Something went wrong
 }
@@ -94,37 +96,38 @@ boolean BNO080::beginSPI(uint8_t user_CSPin, uint8_t user_WAKPin, uint8_t user_I
 	//Wait for first assertion of INT before using WAK pin. Can take ~104ms
 	waitForSPI();
 
-	//if(wakeBNO080() == false) //Bring IC out of sleep after reset
-	//  Serial.println("BNO080 did not wake up");
-
 	_spiPort->begin(); //Turn on SPI hardware
 
 	//At system startup, the hub must send its full advertisement message (see 5.2 and 5.3) to the
 	//host. It must not send any other data until this step is complete.
-	//When BNO080 first boots it broadcasts big startup packet
-	//Read it and dump it
-	waitForSPI(); //Wait for assertion of INT before reading advert message.
-	receivePacket();
+    // after this it sends some error report?? couldn find it in the datasheet (it looks like: Header: 06 00 00 01 Body: 01 07 Length:6 Channel:Command)
+    // then(see 5.2 of datasheet):
+    //• SH-2 will issue an unsolicited initialization message on SHTP channel 2
+    //• The executable will issue a reset message on SHTP channel 1
 
-	//The BNO080 will then transmit an unsolicited Initialize Response (see 6.4.5.2)
-	//Read it and dump it
-	waitForSPI(); //Wait for assertion of INT before reading Init response
-	receivePacket();
+	//so lets read and dump them all..
+	
+    while(receivePacket());
 
 	//Check communication with device
 	shtpData[0] = SHTP_REPORT_PRODUCT_ID_REQUEST; //Request the product ID and reset info
 	shtpData[1] = 0;							  //Reserved
-
 	//Transmit packet on channel 2, 2 bytes
 	sendPacket(CHANNEL_CONTROL, 2);
-
 	//Now we wait for response
-	waitForSPI();
-	if (receivePacket() == true)
-	{
-		if (shtpData[0] == SHTP_REPORT_PRODUCT_ID_RESPONSE)
-			return (true);
-	}
+    
+    bool didReceiveCorrectReply=false;
+
+    if (receivePacket() == true)
+    {
+        if (shtpData[0] == SHTP_REPORT_PRODUCT_ID_RESPONSE)
+            didReceiveCorrectReply = true;
+    }
+    //my BNO080 seems to send two reports as the answer. Lets clear all unsoliscited messages just in case.
+    while(receivePacket())
+        
+    if(didReceiveCorrectReply)return (true);
+
 
 	return (false); //Something went wrong
 }
@@ -292,8 +295,6 @@ void BNO080::parseInputReport(void)
 	}
 	else if (shtpData[5] == SENSOR_REPORTID_MAGNETIC_FIELD)
 	{
-    //Serial.print("mag ");
-    //Serial.println(status);
 		magAccuracy = status;
 		rawMagX = data1;
 		rawMagY = data2;
@@ -338,9 +339,7 @@ void BNO080::parseInputReport(void)
 	}
 	else if (shtpData[5] == SENSOR_REPORTID_RAW_MAGNETOMETER)
 	{
-	  //Serial.print("rmag ");
-	  //Serial.println(status);
-    memsRawMagStatus = status;
+        memsRawMagStatus = status;
 		memsRawMagX = data1;
 		memsRawMagY = data2;
 		memsRawMagZ = data3;
@@ -696,6 +695,144 @@ void BNO080::frsReadRequest(uint16_t recordID, uint16_t readOffset, uint16_t blo
 	sendPacket(CHANNEL_CONTROL, 8);
 }
 
+//Tell the sensor we want to write some data to FRS
+//See 6.3.3 FRS Write Request page 38
+void BNO080::frsWriteRequest(uint16_t recordID, uint16_t length)
+{
+    shtpData[0] = SHTP_REPORT_FRS_WRITE_REQUEST; //FRS Write Request
+    shtpData[1] = 0;                             //Reserved
+    shtpData[2] = (length >> 0) & 0xFF;          //Length LSB       length in 32bit words
+    shtpData[3] = (length >> 8) & 0xFF;          //Length MSB       if length is 0 record is erased
+    shtpData[4] = (recordID >> 0) & 0xFF;        //FRS Type LSB
+    shtpData[5] = (recordID >> 8) & 0xFF;        //FRS Type MSB
+
+    //Transmit packet on channel 2, 8 bytes
+    sendPacket(CHANNEL_CONTROL, 8);
+}
+
+//Send the sensor data to store in the FRS
+void BNO080::frsWriteDataRequest(uint16_t writeOffset, uint32_t *data, uint16_t size)
+{
+    shtpData[0] = SHTP_REPORT_FRS_WRITE_DATA_REQUEST; //FRS Write Request
+    shtpData[1] = 0;                             //Reserved
+    shtpData[2] = (writeOffset >> 0) & 0xFF;          //Write Offset LSB
+    shtpData[3] = (writeOffset >> 8) & 0xFF;          //Write Offset MSB
+    
+    
+    shtpData[4] = (data[0] >> 0) & 0xFF;        //FRS Data LSB
+    shtpData[5] = (data[0] >> 8) & 0xFF;        //FRS Data ...
+    shtpData[6] = (data[0] >> 16) & 0xFF;        //FRS Data ...
+    shtpData[7] = (data[0] >> 24) & 0xFF;        //FRS Data MSB
+    
+    if(size>1)
+    {
+        shtpData[8] = (data[1] >> 0) & 0xFF;        //FRS Data LSB
+        shtpData[9] = (data[1] >> 8) & 0xFF;        //FRS Data ...
+        shtpData[10] = (data[1] >> 16) & 0xFF;        //FRS Data ...
+        shtpData[11] = (data[1] >> 24) & 0xFF;        //FRS Data MSB
+    }
+
+    //Transmit packet on channel 2
+    sendPacket(CHANNEL_CONTROL, 4 + min(size,2) * 4);
+}
+
+//Given a sensor or record ID, write the data to the Flash Record System (FRS) for this sensor
+//if wordsToSend equals 0 the record is errased
+
+//Returns true if  data is written successfully
+//Returns false if failure
+
+bool BNO080::writeFRSdata(uint16_t recordID, uint32_t *data, uint16_t wordsToSend)
+{
+    frsWriteRequest(recordID, wordsToSend);
+    
+    //wait for BNO to be ready
+    uint8_t counter = 0;
+    while(1)
+    {
+        receivePacket();
+        if(shtpData[0] == SHTP_REPORT_FRS_WRITE_RESPONSE)
+        {
+            if(shtpData[1] == FRS_WRITE_STATUS_BUSY || shtpData[1] == FRS_WRITE_STATUS_WORDS_RECEIVED)
+                continue;
+            else if(shtpData[1] == FRS_WRITE_STATUS_READY )
+                break;
+            else if(shtpData[1] == FRS_WRITE_STATUS_COMPLETED)
+                return (true);
+            else
+            {
+                if (_printDebug == true)
+                {
+                    _debugPort->print(F("Error writing data to FRS: "));
+                    _debugPort->println(shtpData[1]);
+                }
+                return (false);
+            }
+        }
+        else if(counter > 10)
+            return (false);
+        counter ++;
+    }
+    
+    
+    //we can send only two words per packet (ceil devide by two)
+    uint8_t timesToSend = (wordsToSend + 2 - 1) / 2;
+    
+    for(uint8_t i = 0; i < timesToSend ; i++)
+    {
+        frsWriteDataRequest(i*2, &data[i*2], min(wordsToSend-i*2,2));
+        counter = 0;
+        while(1)
+        {
+            receivePacket();
+            if(shtpData[0] == SHTP_REPORT_FRS_WRITE_RESPONSE)
+            {
+                if(shtpData[1] == FRS_WRITE_STATUS_BUSY)
+                    continue;
+                else if(shtpData[1] == FRS_WRITE_STATUS_WORDS_RECEIVED)
+                    break;
+                else
+                {
+                    if (_printDebug == true)
+                    {
+                        _debugPort->print(F("Error writing data to FRS: "));
+                        _debugPort->println(shtpData[1]);
+                    }
+                    return (false);
+                }
+            }
+            else if(counter > 10)
+                return (false);
+            counter ++;
+        }
+    }
+    counter = 0;
+    while(1)
+    {
+        receivePacket();
+        if(shtpData[0] == SHTP_REPORT_FRS_WRITE_RESPONSE)
+        {
+            if(shtpData[1] == FRS_WRITE_STATUS_RECORD_VALID)
+                continue;
+            else if(shtpData[1] == FRS_WRITE_STATUS_COMPLETED)
+                return (true);
+            else
+            {
+                if (_printDebug == true)
+                {
+                    _debugPort->print(F("Error writing data to FRS: "));
+                    _debugPort->println(shtpData[1]);
+                }
+                return (false);
+            }
+        }
+        else if(counter > 10)
+            return (false);
+        counter ++;
+    }
+}
+
+
 //Given a sensor or record ID, and a given start/stop bytes, read the data from the Flash Record System (FRS) for this sensor
 //Returns true if metaData array is loaded successfully
 //Returns false if failure
@@ -713,23 +850,29 @@ bool BNO080::readFRSdata(uint16_t recordID, uint8_t startLocation, uint8_t words
 		while (1)
 		{
 			uint8_t counter = 0;
+            
 			while (receivePacket() == false)
 			{
 				if (counter++ > 100)
+                {
+                    if (_printDebug == true)
+                    _debugPort->println(F("Gave up on FRS data read."));
 					return (false); //Give up
+                }
 				delay(1);
 			}
-
 			//We have the packet, inspect it for the right contents
 			//See page 40. Report ID should be 0xF3 and the FRS types should match the thing we requested
 			if (shtpData[0] == SHTP_REPORT_FRS_READ_RESPONSE)
 				if (((uint16_t)shtpData[13] << 8 | shtpData[12]) == recordID)
 					break; //This packet is one we are looking for
 		}
-
+       
 		uint8_t dataLength = shtpData[1] >> 4;
 		uint8_t frsStatus = shtpData[1] & 0x0F;
-
+        
+       
+        
 		uint32_t data0 = (uint32_t)shtpData[7] << 24 | (uint32_t)shtpData[6] << 16 | (uint32_t)shtpData[5] << 8 | (uint32_t)shtpData[4];
 		uint32_t data1 = (uint32_t)shtpData[11] << 24 | (uint32_t)shtpData[10] << 16 | (uint32_t)shtpData[9] << 8 | (uint32_t)shtpData[8];
 
@@ -749,11 +892,28 @@ bool BNO080::readFRSdata(uint16_t recordID, uint8_t startLocation, uint8_t words
 				_debugPort->println(F("metaData array over run. Returning."));
 			return (true); //We have run out of space in our array. Bail.
 		}
-
-		if (frsStatus == 3 || frsStatus == 6 || frsStatus == 7)
+        //FSR Status
+        //0 – noerror
+        //1 – unrecognized FRS type
+        //2 – busy
+        //3 – read record completed
+        //4 – offset out of range
+        //5 – record empty
+        //6 – read block completed (if block size requested)
+        //7 – read block completed and read record completed (if block size requested)
+        //8 – device error (DFU flash memory device unavailable)
+        
+		if (frsStatus == FRS_READ_STATUS_COMLETED || frsStatus == FRS_READ_STATUS_READ_BLOCK_COMPLETED || frsStatus == FRS_READ_STATUS_READ_RECORD_COMPLETED)
 		{
 			return (true); //FRS status is read completed! We're done!
 		}
+        else if(frsStatus != FRS_READ_STATUS_OK) //no error
+        {
+            if (_printDebug == true)
+                _debugPort->print("Error reading record: ");
+                _debugPort->println(frsStatus);
+            return (false);
+        }
 	}
 }
 
@@ -834,6 +994,13 @@ float BNO080::qToFloat(int16_t fixedPointValue, uint8_t qPoint)
 	float qFloat = fixedPointValue;
 	qFloat *= pow(2, qPoint * -1);
 	return (qFloat);
+}
+
+//Given a float value and a Q point, convert to int
+uint32_t BNO080::floatToQ(float floatValue, uint8_t qPoint)
+{
+    floatValue *= pow(2, qPoint);
+    return round(floatValue);
 }
 
 //Sends the packet to enable the rotation vector
@@ -917,6 +1084,30 @@ void BNO080::enableActivityClassifier(uint16_t timeBetweenReports, uint32_t acti
 	_activityConfidences = activityConfidences; //Store pointer to array
 
 	setFeatureCommand(SENSOR_REPORTID_PERSONAL_ACTIVITY_CLASSIFIER, timeBetweenReports, activitiesToEnable);
+}
+
+
+
+
+bool BNO080::configureGyroIntegratedRotationVector(uint16_t source, uint32_t syncInterval, float maxError, uint8_t  prediction)
+{
+    uint32_t data[7];
+    data[0] = source;
+    data[1] = syncInterval;
+    data[2] = floatToQ(maxError,29); //Q29
+    
+    prediction=min(prediction,7);
+    
+    float time[] = {0.0              ,0.005          ,0.01           ,0.02           ,0.028          ,0.03           ,0.04           ,0.05           ,0.06           };
+    float alpha[]= {0.303072543909142,0.3643672983581,0.3222569517214,0.2905555274225,0.3030725439091,0.3084584610521,0.3396316005051,0.3548447957314,0.4091677424529};
+    float beta[] = {0.113295896384921,0.0931655637068,0.0945467654507,0.1018361851286,0.1132958963849,0.1160861868509,0.1237361273333,0.1224432975403,0.1250943899234};
+    float gamma[]= {0.002776219713054,0.0025557744608,0.0022830845312,0.0023953721024,0.0027762197131,0.0028497585549,0.0030844488660,0.0032236047505,0.0035648974825};
+    //table from 2.2.7 Gyro rotation Vector Prediction page 32 plus defaults
+    data[3]=floatToQ(time [prediction],10); //time in s
+    data[4]=floatToQ(alpha[prediction],20); //alpha
+    data[5]=floatToQ(beta [prediction],20); //beta
+    data[6]=floatToQ(gamma[prediction],20); //gamma
+    return writeFRSdata(0xA1A2,data,7);
 }
 
 //Sends the commands to begin calibration of the accelerometer
@@ -1131,19 +1322,19 @@ boolean BNO080::waitForI2C()
 //Blocking wait for BNO080 to assert (pull low) the INT pin
 //indicating it's ready for comm. Can take more than 104ms
 //after a hardware reset
+
 boolean BNO080::waitForSPI()
 {
-	for (uint8_t counter = 0; counter < 125; counter++) //Don't got more than 255
+   
+	for (uint16_t counter = 0; counter < 1250; counter++) //Don't got more than 255
 	{
 		if (digitalRead(_int) == LOW)
 			return (true);
-		if (_printDebug == true)
-			_debugPort->println(F("SPI Wait"));
-		delay(1);
+		delayMicroseconds(100);
 	}
 
 	if (_printDebug == true)
-		_debugPort->println(F("SPI INT timeout"));
+		_debugPort->println(F("SPI timeout"));
 	return (false);
 }
 
@@ -1153,10 +1344,7 @@ boolean BNO080::receivePacket(void)
 {
 	if (_i2cPort == NULL) //Do SPI
 	{
-		if (digitalRead(_int) == HIGH)
-			return (false); //Data is not available
-
-		//Old way: if (waitForSPI() == false) return (false); //Something went wrong
+		if (waitForSPI() == false) return (false); //Something went wrong
 
 		//Get first four bytes to find out how much data we need to read
 
@@ -1198,7 +1386,6 @@ boolean BNO080::receivePacket(void)
 		digitalWrite(_cs, HIGH); //Release BNO080
         
 		_spiPort->endTransaction();
-        //printPacket();
 	}
 	else //Do I2C
 	{
@@ -1232,7 +1419,10 @@ boolean BNO080::receivePacket(void)
 
 		getData(dataLength);
 	}
-
+    if (_printDebug == true)
+       _debugPort->print(F("Received: "));
+    printPacket();
+    
 	return (true); //We're done!
 }
 
@@ -1287,29 +1477,65 @@ boolean BNO080::sendPacket(uint8_t channelNumber, uint8_t dataLength)
 
 	if (_i2cPort == NULL) //Do SPI
 	{
-		//Wait for BNO080 to indicate it is available for communication
+        
+        //Signal the IC we want to send it something (see 6.5.3 Interrupt timing in datasheet)  Wake operation
+        digitalWrite(_wake, LOW);
+		
+        //Wait for BNO080 to indicate it is available for communication
 		if (waitForSPI() == false)
-			return (false); //Something went wrong
+        {
+            if (_printDebug == true)
+                 _debugPort->println(F("SPI Aborting send"));
+            return (false); //Something went wrong
+        }
+        
 
 		//BNO080 has max CLK of 3MHz, MSB first,
 		//The BNO080 uses CPOL = 1 and CPHA = 1. This is mode3
 		_spiPort->beginTransaction(SPISettings(_spiPortSpeed, MSBFIRST, SPI_MODE3));
 		digitalWrite(_cs, LOW);
+        
+        digitalWrite(_wake, HIGH);
+        
+        if (_printDebug == true)
+        {
+            //Send the 4 byte packet header
+            _debugPort->print("Bytes received during send: ");
+            _debugPort->print(_spiPort->transfer(packetLength & 0xFF),HEX);			 //Packet length LSB
+            _debugPort->print(" ");
+            _debugPort->print(_spiPort->transfer(packetLength >> 8),HEX);				 //Packet length MSB
+            _debugPort->print(" ");
+            _debugPort->print(_spiPort->transfer(channelNumber),HEX);					 //Channel number
+            _debugPort->print(" ");
+            _debugPort->print(_spiPort->transfer(sequenceNumber[channelNumber]++),HEX); //Send the sequence number, increments with each packet sent, different counter for each channel
+            _debugPort->print(" ");
+            //Send the user's data packet
+            for (uint8_t i = 0; i < dataLength; i++)
+            {
+                _debugPort->print(_spiPort->transfer(shtpData[i]),HEX);
+                _debugPort->print(" ");
+            }
+            _debugPort->println();
+        }
+        else
+        {
+            //Send the 4 byte packet header
+            _spiPort->transfer(packetLength & 0xFF);             //Packet length LSB
+            _spiPort->transfer(packetLength >> 8);                 //Packet length MSB
+            _spiPort->transfer(channelNumber);                     //Channel number
+            _spiPort->transfer(sequenceNumber[channelNumber]++); //Send the sequence number, increments with each packet sent, different counter for each channel
 
-		//Send the 4 byte packet header
-		_spiPort->transfer(packetLength & 0xFF);			 //Packet length LSB
-		_spiPort->transfer(packetLength >> 8);				 //Packet length MSB
-		_spiPort->transfer(channelNumber);					 //Channel number
-		_spiPort->transfer(sequenceNumber[channelNumber]++); //Send the sequence number, increments with each packet sent, different counter for each channel
+            //Send the user's data packet
+            for (uint8_t i = 0; i < dataLength; i++)
+            {
+                _spiPort->transfer(shtpData[i]);
+                
+            }
 
-		//Send the user's data packet
-		for (uint8_t i = 0; i < dataLength; i++)
-		{
-			_spiPort->transfer(shtpData[i]);
-		}
-
+        }
 		digitalWrite(_cs, HIGH);
 		_spiPort->endTransaction();
+     
 	}
 	else //Do I2C
 	{
@@ -1333,7 +1559,10 @@ boolean BNO080::sendPacket(uint8_t channelNumber, uint8_t dataLength)
 			return (false);
 		}
 	}
-
+    
+    if (_printDebug == true)
+        _debugPort->println(F("Sent a packet"));
+    
 	return (true);
 }
 
