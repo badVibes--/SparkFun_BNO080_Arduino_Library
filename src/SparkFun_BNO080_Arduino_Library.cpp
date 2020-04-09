@@ -992,14 +992,15 @@ uint8_t BNO080::resetReason()
 float BNO080::qToFloat(int16_t fixedPointValue, uint8_t qPoint)
 {
 	float qFloat = fixedPointValue;
-	qFloat *= pow(2, qPoint * -1);
+    //qFloat *= pow(2, qPoint * -1);   // old way   25us on teensy 3.6  280us on Arduino Micro
+    qFloat /= 1 << qPoint; //             new way  100ns on teensy 3.6   50us on Arduino Micro
 	return (qFloat);
 }
 
 //Given a float value and a Q point, convert to int
 uint32_t BNO080::floatToQ(float floatValue, uint8_t qPoint)
 {
-    floatValue *= pow(2, qPoint);
+    floatValue *= 1 << qPoint;
     return round(floatValue);
 }
 
